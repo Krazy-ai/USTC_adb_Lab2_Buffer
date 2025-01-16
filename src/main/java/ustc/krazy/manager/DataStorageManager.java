@@ -29,7 +29,7 @@ public class DataStorageManager {
         this.pages = new int[MAX_PAGES];
         currFile = null;
         for(int i = 0;i < MAX_PAGES;i++) {
-            this.pages[i] = 0; // 初始时，page的useBit = 0,表示未被使用
+            this.pages[i] = 0;
         }
     }
 

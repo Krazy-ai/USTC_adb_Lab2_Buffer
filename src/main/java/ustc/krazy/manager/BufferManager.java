@@ -13,16 +13,14 @@ import static ustc.krazy.constant.BufferConstants.*;
  * @date 2025/1/6
  */
 public class BufferManager {
-    // 两个哈希表
-    private final int[] ftop = new int[DEF_BUFFER_SIZE]; // frameId -> pageId
-    private final BufferControlBlocks[] ptof = new BufferControlBlocks[DEF_BUFFER_SIZE]; // pageId -> frameId
+    //frameId和frameId的映射关系
+    private final int[] ftop = new int[DEF_BUFFER_SIZE];
+    private final BufferControlBlocks[] ptof = new BufferControlBlocks[DEF_BUFFER_SIZE];
 
-    // 缓冲区结构
     public final bFrame[] buf = new bFrame[DEF_BUFFER_SIZE];
-    // 数据存储管理器
     private final DataStorageManager dataStorageManager = new DataStorageManager();
 
-    // LRU链表的头和尾部
+    //LRU链表
     private LRU head;
     private LRU tail;
     public static int hitCounter = 0;
@@ -48,9 +46,6 @@ public class BufferManager {
      * @param pageId
      * @param prot
      * @return
-     * @description 查看页面是否已经在缓冲区中，如果是，
-     * 则返回相应的frame_id。如果该页面还没有驻留在缓冲区中，
-     * 则它会根据需要选择一个Victim Page，并加载到请求的页面中。
      */
     public int fixPage(int pageId, int prot) {
         BufferControlBlocks BufferControlBlocks = this.ptof[this.hash(pageId)];
@@ -58,16 +53,15 @@ public class BufferManager {
             BufferControlBlocks = BufferControlBlocks.next;
         }
         if(BufferControlBlocks != null) {
-            // 页面在缓冲区中
             hitCounter++;
-            LRU p = this.getLRUEle(BufferControlBlocks.frameId);
+            LRU p = this.getLRU(BufferControlBlocks.frameId);
             if(p == null) {
                 throw new RuntimeException("buffer命中了，但是LRU链表中找不到对应的结点");
             } else{
-                // 只有p不在表尾时才要调整
+                // p不在表尾
                 if(p.next != null) {
                     if(p.pre == null) {
-                        // 在开头，特殊处理
+                        // 在开头
                         this.head = p.next;
                         this.head.pre = null;
                         p.next = null;
@@ -76,11 +70,8 @@ public class BufferManager {
                         p.next = null;
                         this.tail = p;
                     } else {
-                        // 1.删除该结点
                         p.pre.next = p.next;
                         p.next.pre = p.pre;
-
-                        // 2.将该节点放到表尾
                         this.tail.next = p;
                         p.pre = this.tail;
                         p.next = null;
@@ -91,7 +82,7 @@ public class BufferManager {
             BufferControlBlocks.count++;
             return BufferControlBlocks.frameId;
         }
-        // 缓存未命中
+        //缓存未命中
         int victimFrameId = this.selectVictim();
         BufferControlBlocks nowBufferControlBlocks = new BufferControlBlocks();
         nowBufferControlBlocks.pageId = pageId;
@@ -99,7 +90,6 @@ public class BufferManager {
         nowBufferControlBlocks.count++;
 
         if(ftop[victimFrameId] != -1) {
-            // 如果这个frame已经被使用了，则先移除这个frame
             BufferControlBlocks victimBufferControlBlocks = ptof[hash(ftop[victimFrameId])];
             while(victimBufferControlBlocks != null && victimBufferControlBlocks.frameId != victimFrameId) {
                 victimBufferControlBlocks = victimBufferControlBlocks.next;
@@ -107,14 +97,11 @@ public class BufferManager {
             if(victimBufferControlBlocks == null) {
                 throw new RuntimeException("selectVictim未找到对应的页帧");
             }
-            // System.out.println(victimBufferControlBlocks);
-            // 移除LRU链表中的该元素，并且修改hash表
             this.removeBufferControlBlocks(victimBufferControlBlocks,victimBufferControlBlocks.pageId);
             this.ftop[victimBufferControlBlocks.frameId] = -1;
-            this.removeLRUEle(victimBufferControlBlocks.frameId);
+            this.removeLRU(victimBufferControlBlocks.frameId);
         }
 
-        // 给新调入的页面分配BufferControlBlocks,并且修改哈希表以及LRU链表
         this.ftop[nowBufferControlBlocks.frameId] = nowBufferControlBlocks.pageId;
         BufferControlBlocks tmpBufferControlBlocks = this.ptof[this.hash(nowBufferControlBlocks.pageId)];
         if(tmpBufferControlBlocks == null) {
@@ -131,8 +118,6 @@ public class BufferManager {
         if(this.head == null && this.tail == null) {
             this.head = node;
             this.tail = node;
-//            System.out.println(head);
-//            System.out.println(tail);
         } else {
             this.tail.next = node;
             node.pre = this.tail;
@@ -140,13 +125,6 @@ public class BufferManager {
             this.tail = node;
         }
 
-
-//        if(x == 2) {
-//            System.out.println(head);
-//            System.out.println(tail);
-//            System.exit(0);
-//        }
-        // 最后读/写入调入的页面
         try {
             if(prot == 0) {
                 this.buf[nowBufferControlBlocks.frameId] = dataStorageManager.readPage(nowBufferControlBlocks.pageId);
@@ -189,7 +167,7 @@ public class BufferManager {
         }
     }
 
-    public int numFreeFrames() { // 返回第一个可用的frameId
+    public int numFreeFrames() {
         int i = 0;
         while(i < DEF_BUFFER_SIZE && ftop[i] != -1) {
             ++i;
@@ -202,13 +180,10 @@ public class BufferManager {
     }
 
     public int selectVictim() {
-//        x++;
-//        System.out.println(x);
         if(this.numFreeFrames() != -1) {
             return this.numFreeFrames();
         } else {
             LRU p = this.head;
-            // System.out.println(p);
             while(p.bcb.count != 0) {
                 p = p.next;
             }
@@ -222,10 +197,7 @@ public class BufferManager {
     }
 
     public void removeBufferControlBlocks(BufferControlBlocks ptr, int pageId) {
-//        System.out.println("ptr:" + ptr);
-//        System.out.println(pageId);
         BufferControlBlocks BufferControlBlocks = this.ptof[this.hash(pageId)];
-        // System.out.println("1:" + BufferControlBlocks);
         if(BufferControlBlocks == null) {
             return;
         }
@@ -248,7 +220,7 @@ public class BufferManager {
         }
     }
 
-    public LRU getLRUEle(int frameId) {
+    public LRU getLRU(int frameId) {
         LRU p = this.tail;
         while(p != null && p.bcb.frameId != frameId) {
             p = p.pre;
@@ -259,7 +231,7 @@ public class BufferManager {
         return p;
     }
 
-    public void removeLRUEle(int frameId) {
+    public void removeLRU(int frameId) {
         if(this.head != null && this.head.bcb.frameId == frameId) {
             this.head = this.head.next;
             this.head.pre = null;

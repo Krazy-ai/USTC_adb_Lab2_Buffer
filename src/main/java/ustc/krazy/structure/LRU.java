@@ -11,10 +11,10 @@ public class LRU {
 
     @Override
     public String toString() {
-        return "LRUle{" +
-                "bcb=" + bcb +
-                ", pre=" + pre +
-                ", next=" + next +
+        return "LRU{" +
+                "BufferControlBlocks = " + bcb +
+                ", pre = " + pre +
+                ", next = " + next +
                 '}';
     }
 }

@@ -45,7 +45,6 @@ public class Trace {
         return BufferManager.hitCounter;
     }
     public void getStatistics() throws IOException {
-        // 读取测试文件
         BufferedReader reader = new BufferedReader(new FileReader("src/main/resources/data-5w-50w-zipf.txt"));
         String tmp = null;
         ArrayList<String> list = new ArrayList<>();

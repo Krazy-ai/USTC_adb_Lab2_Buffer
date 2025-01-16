@@ -15,12 +15,13 @@ public class BufferControlBlocks {
 
     @Override
     public String toString() {
-        return "BCB{" +
-                "pageId=" + pageId +
-                ", frameId=" + frameId +
-                ", count=" + count +
-                ", dirty=" + dirty +
-                ", next=" + next +
+        return "BufferControlBlocks{" +
+                "pageId = " + pageId +
+                ", frameId = " + frameId +
+                ", count = " + count +
+                ", dirty = " + dirty +
+                ", latch = " + latch +
+                ", next = " + next +
                 '}';
     }
 }
