@@ -1,9 +1,13 @@
 package ustc.krazy;
 
-import ustc.krazy.check.Trace;
+import ustc.krazy.check.TraceTask;
 
 import java.io.FileNotFoundException;
-import java.io.IOException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import static java.lang.Thread.sleep;
 
 /**
  * @author krazy
@@ -11,24 +15,33 @@ import java.io.IOException;
  */
 public class DemonstrateRes {
     public static void main(String[] args) throws FileNotFoundException {
-        Trace trace = new Trace();
-        try {
-            trace.createFile();
-        } catch (IOException e) {
-            e.printStackTrace();
-            System.out.println("创建文件失败");
+        int numberOfThreads = 3;
+
+        // 创建一个固定大小的线程池
+        ExecutorService executor = Executors.newFixedThreadPool(numberOfThreads);
+        // 提交任务到线程池
+        for (int i = 1; i <= numberOfThreads; i++) {
+            TraceTask task = new TraceTask(i);
+            executor.submit(task);
         }
+        // 关闭线程池，等待所有任务完成
         try {
-            double startTime = System.currentTimeMillis();
-            trace.getStatistics();
-            double endTime = System.currentTimeMillis();
-            double runTime = endTime - startTime;
-            System.out.printf("内存和磁盘之间的总I/O次数: %d\n" +
-                    " 缓存命中率: %.3f%%\n" +
-                    " 测试运行时间: %.3fs\n", trace.getIOCounter(), trace.getHitRate() * 100, (double)runTime / 1000);
-        } catch (IOException e) {
+            sleep(1000);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(1, TimeUnit.HOURS)) {
+                executor.shutdownNow(); // 超时后强制关闭
+                System.out.println("线程池未能在规定时间内关闭.");
+            } else {
+                System.out.println("所有任务已完成.");
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
             e.printStackTrace();
-            System.out.println("测试程序异常!");
+            System.out.println("线程池关闭时发生中断.");
         }
     }
 }

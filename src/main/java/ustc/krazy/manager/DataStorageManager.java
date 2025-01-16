@@ -7,6 +7,8 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 
 import static ustc.krazy.constant.BufferConstants.FRAME_SIZE;
 import static ustc.krazy.constant.BufferConstants.MAX_PAGES;
@@ -20,9 +22,10 @@ public class DataStorageManager {
     private RandomAccessFile currFile;
     private int numPages;
     private int[] pages;
+    private long threadId = Thread.currentThread().getId();
 
-    public static int ICounter = 0;
-    public static int OCounter = 0;
+    public static Map<Long, Integer> ICounter;
+    public static Map<Long, Integer> OCounter;
 
     public DataStorageManager() {
         this.numPages = 0;
@@ -31,6 +34,8 @@ public class DataStorageManager {
         for(int i = 0;i < MAX_PAGES;i++) {
             this.pages[i] = 0;
         }
+        ICounter = new HashMap<>();
+        OCounter = new HashMap<>();
     }
 
     public int openFile(String fileName){
@@ -65,23 +70,23 @@ public class DataStorageManager {
             } else if (length == -1) {
                 System.out.println("文件已读取到末尾");
             }
-            ICounter++;
+            ICounter.merge(threadId,1, Integer::sum);
         } catch (IOException e) {
             e.printStackTrace();
             System.out.println("文件读异常");
         }
         return new bFrame(buffer);
     }
-    public int writePage(int frameId,bFrame frame){
+    public bFrame writePage(int frameId,bFrame frame){
         try {
             this.currFile.seek((long) frameId * FRAME_SIZE);
             this.currFile.write(Arrays.toString(frame.filed).getBytes(), 0, FRAME_SIZE);
-            OCounter++;
+            OCounter.merge(threadId,1, Integer::sum);
         } catch (IOException e) {
             e.printStackTrace();
             System.out.println("文件写异常");
         }
-        return FRAME_SIZE;
+        return frame;
     }
     public RandomAccessFile getFile() {
         return this.currFile;
@@ -94,6 +99,14 @@ public class DataStorageManager {
     }
     public int getUse(int index) {
         return this.pages[index];
+    }
+
+    public int getIOCounter(long thread) {
+        return ICounter.getOrDefault(thread,0);
+    }
+
+    public int getOCounter(long thread) {
+        return OCounter.getOrDefault(thread,0);
     }
 
 }

@@ -1,10 +1,17 @@
 package ustc.krazy.manager;
 
+import ustc.krazy.constant.Permissions;
 import ustc.krazy.structure.BufferControlBlocks;
 import ustc.krazy.structure.LRU;
 import ustc.krazy.structure.bFrame;
+import ustc.krazy.lock.PageLockManager;
 
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static ustc.krazy.constant.BufferConstants.*;
 
@@ -13,17 +20,21 @@ import static ustc.krazy.constant.BufferConstants.*;
  * @date 2025/1/6
  */
 public class BufferManager {
+    private long threadId = Thread.currentThread().getId();
+    private PageLockManager pageLockManager;
     //frameId和frameId的映射关系
     private final int[] ftop = new int[DEF_BUFFER_SIZE];
     private final BufferControlBlocks[] ptof = new BufferControlBlocks[DEF_BUFFER_SIZE];
-
+    private final Map<Long, Integer> tRandomTimeout = new ConcurrentHashMap<>();//并发
+    private static final int TIMEOUT_MILLISECONDS = 1500; // 认为死锁超时的时间
+    private final Random randomTimeout = new Random();
     public final bFrame[] buf = new bFrame[DEF_BUFFER_SIZE];
     private final DataStorageManager dataStorageManager = new DataStorageManager();
 
     //LRU链表
     private LRU head;
     private LRU tail;
-    public static int hitCounter = 0;
+    public static Map<Long, Integer> hitCounter;
 
     public BufferManager(){
         for(int i = 0;i < DEF_BUFFER_SIZE;i++) {
@@ -34,6 +45,8 @@ public class BufferManager {
         if(success == 0) {
             System.out.println("打开文件异常");
         }
+        hitCounter = new HashMap<>();
+        pageLockManager = new PageLockManager();
     }
 
     @Override
@@ -44,100 +57,130 @@ public class BufferManager {
     /**
      *
      * @param pageId
-     * @param prot
+     * @param perm
      * @return
      */
-    public int fixPage(int pageId, int prot) {
-        BufferControlBlocks BufferControlBlocks = this.ptof[this.hash(pageId)];
-        while(BufferControlBlocks != null && BufferControlBlocks.pageId != pageId) {
-            BufferControlBlocks = BufferControlBlocks.next;
-        }
-        if(BufferControlBlocks != null) {
-            hitCounter++;
-            LRU p = this.getLRU(BufferControlBlocks.frameId);
-            if(p == null) {
-                throw new RuntimeException("buffer命中了，但是LRU链表中找不到对应的结点");
-            } else{
-                // p不在表尾
-                if(p.next != null) {
-                    if(p.pre == null) {
-                        // 在开头
-                        this.head = p.next;
-                        this.head.pre = null;
-                        p.next = null;
-                        this.tail.next = p;
-                        p.pre = this.tail;
-                        p.next = null;
-                        this.tail = p;
-                    } else {
-                        p.pre.next = p.next;
-                        p.next.pre = p.pre;
-                        this.tail.next = p;
-                        p.pre = this.tail;
-                        p.next = null;
-                        this.tail = p;
+    public int fixPage(int pageId, Permissions perm) throws Exception {
+        int acquireType = perm == Permissions.READ_ONLY ? PageLockManager.PageLock.SHARE : PageLockManager.PageLock.EXCLUSIVE;
+        long start = System.currentTimeMillis();
+        while (true) {
+            try {
+                if (pageLockManager.acquireLock(pageId, threadId, acquireType)) {
+                    BufferControlBlocks BufferControlBlocks = this.ptof[this.hash(pageId)];
+                    while(BufferControlBlocks != null && BufferControlBlocks.pageId != pageId) {
+                        BufferControlBlocks = BufferControlBlocks.next;
                     }
+                    if(BufferControlBlocks != null) {
+                        hitCounter.merge(threadId, 1, Integer::sum);
+                        LRU p = this.getLRU(BufferControlBlocks.frameId);
+                        if(p == null) {
+                            throw new RuntimeException("buffer命中了，但是LRU链表中找不到对应的结点");
+                        } else{
+                            // p不在表尾
+                            if(p.next != null) {
+                                if(p.pre == null) {
+                                    // 在开头
+                                    this.head = p.next;
+                                    this.head.pre = null;
+                                    p.next = null;
+                                    this.tail.next = p;
+                                    p.pre = this.tail;
+                                    p.next = null;
+                                    this.tail = p;
+                                } else {
+                                    p.pre.next = p.next;
+                                    p.next.pre = p.pre;
+                                    this.tail.next = p;
+                                    p.pre = this.tail;
+                                    p.next = null;
+                                    this.tail = p;
+                                }
+                            }
+                        }
+                        BufferControlBlocks.count++;
+                        return BufferControlBlocks.frameId;
+                    }
+                    //缓存未命中
+                    int victimFrameId = this.selectVictim();
+                    BufferControlBlocks nowBufferControlBlocks = new BufferControlBlocks();
+                    nowBufferControlBlocks.pageId = pageId;
+                    nowBufferControlBlocks.frameId = victimFrameId;
+                    nowBufferControlBlocks.count++;
+
+                    if(ftop[victimFrameId] != -1) {
+                        BufferControlBlocks victimBufferControlBlocks = ptof[hash(ftop[victimFrameId])];
+                        while(victimBufferControlBlocks != null && victimBufferControlBlocks.frameId != victimFrameId) {
+                            victimBufferControlBlocks = victimBufferControlBlocks.next;
+                        }
+                        if(victimBufferControlBlocks == null) {
+                            throw new RuntimeException("selectVictim未找到对应的页帧");
+                        }
+                        this.removeBufferControlBlocks(victimBufferControlBlocks,victimBufferControlBlocks.pageId);
+                        this.ftop[victimBufferControlBlocks.frameId] = -1;
+                        this.removeLRU(victimBufferControlBlocks.frameId);
+                    }
+
+                    this.ftop[nowBufferControlBlocks.frameId] = nowBufferControlBlocks.pageId;
+                    BufferControlBlocks tmpBufferControlBlocks = this.ptof[this.hash(nowBufferControlBlocks.pageId)];
+                    if(tmpBufferControlBlocks == null) {
+                        this.ptof[this.hash(nowBufferControlBlocks.pageId)] = nowBufferControlBlocks;
+                    } else {
+                        while(tmpBufferControlBlocks.next != null) {
+                            tmpBufferControlBlocks = tmpBufferControlBlocks.next;
+                        }
+                        tmpBufferControlBlocks.next = nowBufferControlBlocks;
+                    }
+
+                    LRU node = new LRU();
+                    node.bcb = nowBufferControlBlocks;
+                    if(this.head == null && this.tail == null) {
+                        this.head = node;
+                        this.tail = node;
+                    } else {
+                        this.tail.next = node;
+                        node.pre = this.tail;
+                        node.next = null;
+                        this.tail = node;
+                    }
+
+                    try {
+                        if(perm == Permissions.READ_ONLY ) {
+                            this.buf[nowBufferControlBlocks.frameId] = dataStorageManager.readPage(nowBufferControlBlocks.pageId);
+                        } else {
+                            this.buf[nowBufferControlBlocks.frameId] = dataStorageManager.writePage(nowBufferControlBlocks.pageId,new bFrame(new byte[FRAME_SIZE]));
+                        }
+                    } catch (IOException e) {
+                        throw new RuntimeException("读入调入页面异常");
+                    }
+                    return nowBufferControlBlocks.frameId;
                 }
+            } catch (InterruptedException e) {
+                e.printStackTrace();
             }
-            BufferControlBlocks.count++;
-            return BufferControlBlocks.frameId;
-        }
-        //缓存未命中
-        int victimFrameId = this.selectVictim();
-        BufferControlBlocks nowBufferControlBlocks = new BufferControlBlocks();
-        nowBufferControlBlocks.pageId = pageId;
-        nowBufferControlBlocks.frameId = victimFrameId;
-        nowBufferControlBlocks.count++;
-
-        if(ftop[victimFrameId] != -1) {
-            BufferControlBlocks victimBufferControlBlocks = ptof[hash(ftop[victimFrameId])];
-            while(victimBufferControlBlocks != null && victimBufferControlBlocks.frameId != victimFrameId) {
-                victimBufferControlBlocks = victimBufferControlBlocks.next;
+            // 如果未能获取到锁，判断是否超时
+            long now = System.currentTimeMillis();
+            if (now - start > getTransactionTimeout(threadId)) {
+                throw new Exception();
             }
-            if(victimBufferControlBlocks == null) {
-                throw new RuntimeException("selectVictim未找到对应的页帧");
+            //添加短暂的休眠，避免 CPU 过度占用
+            // 随机化减少竞争
+            try {
+                Thread.sleep(20 + ThreadLocalRandom.current().nextInt(60));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();// 中断处理
             }
-            this.removeBufferControlBlocks(victimBufferControlBlocks,victimBufferControlBlocks.pageId);
-            this.ftop[victimBufferControlBlocks.frameId] = -1;
-            this.removeLRU(victimBufferControlBlocks.frameId);
         }
 
-        this.ftop[nowBufferControlBlocks.frameId] = nowBufferControlBlocks.pageId;
-        BufferControlBlocks tmpBufferControlBlocks = this.ptof[this.hash(nowBufferControlBlocks.pageId)];
-        if(tmpBufferControlBlocks == null) {
-            this.ptof[this.hash(nowBufferControlBlocks.pageId)] = nowBufferControlBlocks;
-        } else {
-            while(tmpBufferControlBlocks.next != null) {
-                tmpBufferControlBlocks = tmpBufferControlBlocks.next;
-            }
-            tmpBufferControlBlocks.next = nowBufferControlBlocks;
-        }
-
-        LRU node = new LRU();
-        node.bcb = nowBufferControlBlocks;
-        if(this.head == null && this.tail == null) {
-            this.head = node;
-            this.tail = node;
-        } else {
-            this.tail.next = node;
-            node.pre = this.tail;
-            node.next = null;
-            this.tail = node;
-        }
-
-        try {
-            if(prot == 0) {
-                this.buf[nowBufferControlBlocks.frameId] = dataStorageManager.readPage(nowBufferControlBlocks.pageId);
-            } else {
-                this.buf[nowBufferControlBlocks.frameId] = new bFrame(new byte[FRAME_SIZE]);
-            }
-        } catch (IOException e) {
-            throw new RuntimeException("读入调入页面异常");
-        }
-        return nowBufferControlBlocks.frameId;
     }
 
-    public int fixNewPage() {
+    // 随机化超时时间
+    private int getTransactionTimeout(long tid) {
+        tRandomTimeout.putIfAbsent(tid, randomTimeout.nextInt(1000) + TIMEOUT_MILLISECONDS);
+        Integer res = tRandomTimeout.get(tid); // 以防并发问题
+        return res == null ? TIMEOUT_MILLISECONDS : res;
+    }
+
+    public int fixNewPage() throws Exception {
         int[] pages = dataStorageManager.getPages();
         if(dataStorageManager.getNumPages() == pages.length) {
             return -1;
@@ -146,7 +189,7 @@ public class BufferManager {
             if(pages[pageId] == 0) {
                 dataStorageManager.setUse(pageId,MAX_PAGES);
                 dataStorageManager.incNumPages();
-                fixPage(pageId,0);
+                fixPage(pageId,Permissions.READ_ONLY);
                 return pageId;
             }
         }
@@ -159,6 +202,7 @@ public class BufferManager {
             BufferControlBlocks = BufferControlBlocks.next;
         }
         if(BufferControlBlocks == null) {
+            pageLockManager.releaseLock(pageId,threadId);
             return -1;
         }
         else {
@@ -205,7 +249,6 @@ public class BufferManager {
             this.ptof[this.hash(pageId)] = BufferControlBlocks.next;
         } else {
             while(BufferControlBlocks.next != null && BufferControlBlocks.next != ptr) {
-                // System.out.println(BufferControlBlocks);
                 BufferControlBlocks = BufferControlBlocks.next;
             }
             if(BufferControlBlocks.next == null) {
@@ -289,7 +332,7 @@ public class BufferManager {
                 BufferControlBlocks = BufferControlBlocks.next;
             }
         }
-        System.out.println("最后系统结束全部写回了" + count + "块");
+        System.out.printf("Thread %d - 最后系统结束全部写回了%d块\n" , threadId, count);
     }
 
     public void printFrame(int frameId) {
